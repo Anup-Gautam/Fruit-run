@@ -10,18 +10,73 @@ import type { AppRouter } from './server/trpc';
 type RouterOutputs = inferRouterOutputs<AppRouter>;
 
 // ============ GAME CONSTANTS ============
-const GRID_SIZE = 20; // Number of cells
-const INITIAL_SNAKE_SPEED = 150; // ms per move
-const SPEED_INCREASE_INTERVAL = 3000; // Increase speed every 3 seconds
-const SPEED_INCREASE_AMOUNT = 5; // ms faster per interval
-const MIN_SNAKE_SPEED = 50; // Minimum ms per move
-const SNAKE_GROW_INTERVAL = 5000; // Grow every 5 seconds
-const FRUIT_RADIUS_RATIO = 0.4; // Fruit radius relative to cell size
-const COLLISION_TOLERANCE = 0.6; // Collision detection tolerance
+const GRID_SIZE = 20;
+const INITIAL_SNAKE_SPEED = 150;
+const MIN_SNAKE_SPEED = 40;
+const FRUIT_RADIUS_RATIO = 0.4;
+const COLLISION_TOLERANCE = 0.6;
+const POWER_FOOD_SPAWN_INTERVAL = 8000;
+const POWER_FOOD_DURATION = 6000;
+
+// ============ DIFFICULTY SETTINGS ============
+type Difficulty = 'easy' | 'medium' | 'hard';
+
+type DifficultyConfig = {
+  speedIncreaseInterval: number;
+  speedIncreaseAmount: number;
+  growInterval: number;
+  hasPowerFood: boolean;
+  snakePrioritizesPowerFood: boolean;
+  powerFoodSpeedBoost: number;
+  powerFoodSizeBoost: number;
+  label: string;
+  color: string;
+  description: string;
+};
+
+const DIFFICULTY_SETTINGS: Record<Difficulty, DifficultyConfig> = {
+  easy: {
+    speedIncreaseInterval: 4000,
+    speedIncreaseAmount: 5,
+    growInterval: 4000,
+    hasPowerFood: false,
+    snakePrioritizesPowerFood: false,
+    powerFoodSpeedBoost: 0,
+    powerFoodSizeBoost: 0,
+    label: 'Easy',
+    color: '#4ade80',
+    description: 'Slower progression, no power food',
+  },
+  medium: {
+    speedIncreaseInterval: 3000,
+    speedIncreaseAmount: 3,
+    growInterval: 3000,
+    hasPowerFood: true,
+    snakePrioritizesPowerFood: false,
+    powerFoodSpeedBoost: 1,
+    powerFoodSizeBoost: 1,
+    label: 'Medium',
+    color: '#facc15',
+    description: 'Power food appears (+1 speed, +1 size)',
+  },
+  hard: {
+    speedIncreaseInterval: 2000,
+    speedIncreaseAmount: 5,
+    growInterval: 2000,
+    hasPowerFood: true,
+    snakePrioritizesPowerFood: true,
+    powerFoodSpeedBoost: 2,
+    powerFoodSizeBoost: 2,
+    label: 'Hard',
+    color: '#ef4444',
+    description: 'Snake hunts power food first (+2 speed, +2 size)',
+  },
+};
 
 // ============ TYPES ============
 type Point = { x: number; y: number };
-type GameState = 'idle' | 'playing' | 'gameover';
+type GameState = 'menu' | 'idle' | 'playing' | 'gameover';
+type PowerFood = { x: number; y: number; spawnTime: number } | null;
 
 // ============ COLORS ============
 const COLORS = {
@@ -38,6 +93,8 @@ const COLORS = {
   textMuted: '#8b949e',
   accent: '#ff4500',
   danger: '#dc3545',
+  powerFood: '#ffdd00',
+  powerFoodGlow: 'rgba(255, 221, 0, 0.5)',
 };
 
 // ============ GAME COMPONENT ============
@@ -46,11 +103,13 @@ export const App = () => {
   const containerRef = useRef<HTMLDivElement>(null);
   
   // Game state
-  const [gameState, setGameState] = useState<GameState>('idle');
+  const [gameState, setGameState] = useState<GameState>('menu');
+  const [difficulty, setDifficulty] = useState<Difficulty>('medium');
   const [score, setScore] = useState(0);
   const [snakeLength, setSnakeLength] = useState(3);
   const [snakeSpeed, setSnakeSpeed] = useState(INITIAL_SNAKE_SPEED);
   const [showLeaderboard, setShowLeaderboard] = useState(false);
+  const [powerFoodActive, setPowerFoodActive] = useState(false);
   
   // Data from server
   const [initData, setInitData] = useState<RouterOutputs['init']['get'] | null>(null);
@@ -60,19 +119,25 @@ export const App = () => {
     isPersonalBest: boolean;
   } | null>(null);
 
+  // Get current difficulty config
+  const difficultyConfig = DIFFICULTY_SETTINGS[difficulty];
+
   // Game refs (mutable state for game loop)
   const gameRef = useRef({
     fruit: { x: GRID_SIZE / 2, y: GRID_SIZE / 2 },
     snake: [] as Point[],
+    powerFood: null as PowerFood,
     snakeSpeed: INITIAL_SNAKE_SPEED,
     lastMoveTime: 0,
     lastGrowTime: 0,
     lastSpeedTime: 0,
+    lastPowerFoodSpawnTime: 0,
     startTime: 0,
     cellSize: 0,
     canvasSize: 0,
     isPlaying: false,
     hasStarted: false,
+    difficulty: 'medium' as Difficulty,
   });
 
   // Fetch initial data
@@ -99,19 +164,46 @@ export const App = () => {
     return snake;
   }, []);
 
-  // Calculate Manhattan distance
-  const manhattanDistance = (a: Point, b: Point) => {
-    return Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
+  // Calculate Euclidean distance
+  const euclideanDistance = (a: Point, b: Point) => {
+    const dx = a.x - b.x;
+    const dy = a.y - b.y;
+    return Math.sqrt(dx * dx + dy * dy);
   };
 
-  // Get next snake head position using Manhattan distance pathfinding
-  const getNextSnakeMove = useCallback((head: Point, target: Point, snake: Point[]): Point => {
-    const directions = [
-      { x: 0, y: -1 }, // up
-      { x: 0, y: 1 },  // down
-      { x: -1, y: 0 }, // left
-      { x: 1, y: 0 },  // right
+  // Spawn power food at random location
+  const spawnPowerFood = useCallback((snake: Point[], fruit: Point): PowerFood => {
+    let attempts = 0;
+    while (attempts < 50) {
+      const x = Math.floor(Math.random() * GRID_SIZE);
+      const y = Math.floor(Math.random() * GRID_SIZE);
+      
+      const onSnake = snake.some(s => s.x === x && s.y === y);
+      const tooCloseToFruit = Math.abs(x - fruit.x) < 3 && Math.abs(y - fruit.y) < 3;
+      
+      if (!onSnake && !tooCloseToFruit) {
+        return { x, y, spawnTime: performance.now() };
+      }
+      attempts++;
+    }
+    return { x: GRID_SIZE - 2, y: GRID_SIZE - 2, spawnTime: performance.now() };
+  }, []);
+
+  // Get next snake head position
+  const getNextSnakeMove = useCallback((head: Point, target: Point): Point => {
+    const directions: Point[] = [
+      { x: 0, y: -1 },
+      { x: 0, y: 1 },
+      { x: -1, y: 0 },
+      { x: 1, y: 0 },
     ];
+
+    for (let i = directions.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      const temp = directions[i]!;
+      directions[i] = directions[j]!;
+      directions[j] = temp;
+    }
 
     let bestMove = head;
     let bestDistance = Infinity;
@@ -122,18 +214,14 @@ export const App = () => {
         y: head.y + dir.y,
       };
 
-      // Check bounds
       if (newPos.x < 0 || newPos.x >= GRID_SIZE || newPos.y < 0 || newPos.y >= GRID_SIZE) {
         continue;
       }
 
-      // Check self-collision (skip tail as it will move)
-      const wouldCollide = snake.slice(0, -1).some(
-        segment => segment.x === newPos.x && segment.y === newPos.y
-      );
-      if (wouldCollide) continue;
-
-      const distance = manhattanDistance(newPos, target);
+      const cellCenter = { x: newPos.x + 0.5, y: newPos.y + 0.5 };
+      const targetCenter = { x: target.x + 0.5, y: target.y + 0.5 };
+      const distance = euclideanDistance(cellCenter, targetCenter);
+      
       if (distance < bestDistance) {
         bestDistance = distance;
         bestMove = newPos;
@@ -155,11 +243,9 @@ export const App = () => {
       const segmentCenterX = segment.x * cellSize + cellSize / 2;
       const segmentCenterY = segment.y * cellSize + cellSize / 2;
       
-      // Check if fruit overlaps with this segment
       const dx = Math.abs(fruitCenterX - segmentCenterX);
       const dy = Math.abs(fruitCenterY - segmentCenterY);
       
-      // Collision if fruit center is within the segment cell
       const collisionThreshold = cellSize * COLLISION_TOLERANCE;
       if (dx < collisionThreshold && dy < collisionThreshold) {
         return true;
@@ -168,9 +254,15 @@ export const App = () => {
     return false;
   }, []);
 
+  // Check if snake head is on power food
+  const checkSnakePowerFoodCollision = useCallback((snakeHead: Point, powerFood: PowerFood): boolean => {
+    if (!powerFood) return false;
+    return snakeHead.x === powerFood.x && snakeHead.y === powerFood.y;
+  }, []);
+
   // Draw game
   const draw = useCallback((ctx: CanvasRenderingContext2D) => {
-    const { fruit, snake, cellSize, canvasSize } = gameRef.current;
+    const { fruit, snake, powerFood, cellSize, canvasSize } = gameRef.current;
 
     // Clear canvas
     ctx.fillStyle = COLORS.background;
@@ -191,7 +283,47 @@ export const App = () => {
       ctx.stroke();
     }
 
-    // Draw snake body (from tail to head for proper layering)
+    // Draw power food if exists
+    if (powerFood) {
+      const pfCenterX = powerFood.x * cellSize + cellSize / 2;
+      const pfCenterY = powerFood.y * cellSize + cellSize / 2;
+      const pfRadius = cellSize * 0.35;
+
+      const pulseScale = 1 + 0.2 * Math.sin(performance.now() / 200);
+      
+      const gradient = ctx.createRadialGradient(
+        pfCenterX, pfCenterY, pfRadius * 0.3,
+        pfCenterX, pfCenterY, pfRadius * 2.5 * pulseScale
+      );
+      gradient.addColorStop(0, COLORS.powerFoodGlow);
+      gradient.addColorStop(1, 'transparent');
+      ctx.fillStyle = gradient;
+      ctx.beginPath();
+      ctx.arc(pfCenterX, pfCenterY, pfRadius * 2.5 * pulseScale, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = COLORS.powerFood;
+      ctx.shadowColor = COLORS.powerFood;
+      ctx.shadowBlur = 20;
+      ctx.beginPath();
+      for (let i = 0; i < 5; i++) {
+        const angle = (i * 4 * Math.PI) / 5 - Math.PI / 2;
+        const x = pfCenterX + Math.cos(angle) * pfRadius;
+        const y = pfCenterY + Math.sin(angle) * pfRadius;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.closePath();
+      ctx.fill();
+      ctx.shadowBlur = 0;
+
+      ctx.fillStyle = '#fff8dc';
+      ctx.beginPath();
+      ctx.arc(pfCenterX, pfCenterY, pfRadius * 0.4, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // Draw snake body
     for (let i = snake.length - 1; i >= 0; i--) {
       const segment = snake[i];
       if (!segment) continue;
@@ -199,38 +331,32 @@ export const App = () => {
       const y = segment.y * cellSize;
       const padding = cellSize * 0.1;
       
-      // Gradient color from tail to head
       const ratio = i / Math.max(snake.length - 1, 1);
       const isHead = i === 0;
       
       if (isHead) {
-        // Draw snake head
         ctx.fillStyle = COLORS.snakeHead;
         ctx.shadowColor = COLORS.snakeHead;
         ctx.shadowBlur = 10;
       } else {
-        // Interpolate color
         const green = Math.floor(139 + ratio * (124 - 139));
         const greenHex = Math.floor(205 + ratio * (252 - 205));
         ctx.fillStyle = `rgb(${Math.floor(50 + ratio * 74)}, ${greenHex}, ${green > 50 ? 0 : green})`;
         ctx.shadowBlur = 0;
       }
 
-      // Draw rounded rectangle for segment
       const radius = cellSize * 0.3;
       ctx.beginPath();
       ctx.roundRect(x + padding, y + padding, cellSize - padding * 2, cellSize - padding * 2, radius);
       ctx.fill();
       ctx.shadowBlur = 0;
 
-      // Draw eyes on head
       if (isHead) {
         ctx.fillStyle = COLORS.snakeEye;
         const eyeSize = cellSize * 0.12;
         const eyeOffsetX = cellSize * 0.25;
         const eyeOffsetY = cellSize * 0.3;
         
-        // Determine direction for eye placement
         let dirX = 1, dirY = 0;
         const head = snake[0];
         const neck = snake[1];
@@ -243,7 +369,6 @@ export const App = () => {
         const centerY = y + cellSize / 2;
         
         if (dirX !== 0) {
-          // Moving horizontally
           ctx.beginPath();
           ctx.arc(centerX + dirX * eyeOffsetX, centerY - eyeOffsetY, eyeSize, 0, Math.PI * 2);
           ctx.fill();
@@ -251,7 +376,6 @@ export const App = () => {
           ctx.arc(centerX + dirX * eyeOffsetX, centerY + eyeOffsetY, eyeSize, 0, Math.PI * 2);
           ctx.fill();
         } else {
-          // Moving vertically
           ctx.beginPath();
           ctx.arc(centerX - eyeOffsetY, centerY + dirY * eyeOffsetX, eyeSize, 0, Math.PI * 2);
           ctx.fill();
@@ -262,12 +386,11 @@ export const App = () => {
       }
     }
 
-    // Draw fruit (player) with glow effect
+    // Draw fruit (player)
     const fruitCenterX = fruit.x * cellSize + cellSize / 2;
     const fruitCenterY = fruit.y * cellSize + cellSize / 2;
     const fruitRadius = cellSize * FRUIT_RADIUS_RATIO;
 
-    // Glow
     const gradient = ctx.createRadialGradient(
       fruitCenterX, fruitCenterY, fruitRadius * 0.5,
       fruitCenterX, fruitCenterY, fruitRadius * 2
@@ -279,7 +402,6 @@ export const App = () => {
     ctx.arc(fruitCenterX, fruitCenterY, fruitRadius * 2, 0, Math.PI * 2);
     ctx.fill();
 
-    // Fruit body (apple-like)
     ctx.fillStyle = COLORS.fruit;
     ctx.shadowColor = COLORS.fruit;
     ctx.shadowBlur = 15;
@@ -288,13 +410,11 @@ export const App = () => {
     ctx.fill();
     ctx.shadowBlur = 0;
 
-    // Fruit highlight
     ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
     ctx.beginPath();
     ctx.arc(fruitCenterX - fruitRadius * 0.3, fruitCenterY - fruitRadius * 0.3, fruitRadius * 0.25, 0, Math.PI * 2);
     ctx.fill();
 
-    // Fruit stem
     ctx.strokeStyle = '#654321';
     ctx.lineWidth = 2;
     ctx.beginPath();
@@ -302,7 +422,6 @@ export const App = () => {
     ctx.lineTo(fruitCenterX + 2, fruitCenterY - fruitRadius - 6);
     ctx.stroke();
 
-    // Leaf
     ctx.fillStyle = '#228b22';
     ctx.beginPath();
     ctx.ellipse(fruitCenterX + 5, fruitCenterY - fruitRadius - 4, 5, 3, Math.PI / 4, 0, Math.PI * 2);
@@ -319,20 +438,21 @@ export const App = () => {
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    // Update score (survival time in ms)
+    const config = DIFFICULTY_SETTINGS[game.difficulty];
+
+    // Update score
     const currentScore = Math.floor((timestamp - game.startTime) / 100) * 100;
     setScore(currentScore);
 
     // Snake speed increase
-    if (timestamp - game.lastSpeedTime >= SPEED_INCREASE_INTERVAL) {
-      game.snakeSpeed = Math.max(MIN_SNAKE_SPEED, game.snakeSpeed - SPEED_INCREASE_AMOUNT);
+    if (timestamp - game.lastSpeedTime >= config.speedIncreaseInterval) {
+      game.snakeSpeed = Math.max(MIN_SNAKE_SPEED, game.snakeSpeed - config.speedIncreaseAmount);
       game.lastSpeedTime = timestamp;
       setSnakeSpeed(game.snakeSpeed);
     }
 
     // Snake growth
-    if (timestamp - game.lastGrowTime >= SNAKE_GROW_INTERVAL) {
-      // Add new segment at tail position
+    if (timestamp - game.lastGrowTime >= config.growInterval) {
       const tail = game.snake[game.snake.length - 1];
       if (tail) {
         game.snake.push({ x: tail.x, y: tail.y });
@@ -341,20 +461,53 @@ export const App = () => {
       }
     }
 
+    // Power food spawning (medium and hard modes)
+    if (config.hasPowerFood) {
+      if (!game.powerFood && timestamp - game.lastPowerFoodSpawnTime >= POWER_FOOD_SPAWN_INTERVAL) {
+        game.powerFood = spawnPowerFood(game.snake, game.fruit);
+        game.lastPowerFoodSpawnTime = timestamp;
+        setPowerFoodActive(true);
+      }
+      
+      if (game.powerFood && timestamp - game.powerFood.spawnTime >= POWER_FOOD_DURATION) {
+        game.powerFood = null;
+        setPowerFoodActive(false);
+      }
+    }
+
     // Snake movement
     if (timestamp - game.lastMoveTime >= game.snakeSpeed) {
       const head = game.snake[0];
       if (head) {
-        const targetCell = {
-          x: Math.floor(game.fruit.x),
-          y: Math.floor(game.fruit.y),
-        };
+        let target: Point;
         
-        const newHead = getNextSnakeMove(head, targetCell, game.snake);
+        if (config.snakePrioritizesPowerFood && game.powerFood) {
+          target = { x: game.powerFood.x, y: game.powerFood.y };
+        } else {
+          target = game.fruit;
+        }
         
-        // Move snake: add new head, remove tail
+        const newHead = getNextSnakeMove(head, target);
+        
         game.snake.unshift(newHead);
         game.snake.pop();
+        
+        if (game.powerFood && checkSnakePowerFoodCollision(newHead, game.powerFood)) {
+          game.snakeSpeed = Math.max(MIN_SNAKE_SPEED, game.snakeSpeed - config.powerFoodSpeedBoost);
+          setSnakeSpeed(game.snakeSpeed);
+          
+          for (let i = 0; i < config.powerFoodSizeBoost; i++) {
+            const tail = game.snake[game.snake.length - 1];
+            if (tail) {
+              game.snake.push({ x: tail.x, y: tail.y });
+            }
+          }
+          setSnakeLength(game.snake.length);
+          
+          game.powerFood = null;
+          setPowerFoodActive(false);
+          game.lastPowerFoodSpawnTime = timestamp;
+        }
         
         game.lastMoveTime = timestamp;
       }
@@ -367,35 +520,36 @@ export const App = () => {
       return;
     }
 
-    // Draw
     draw(ctx);
-
-    // Continue loop
     requestAnimationFrame(gameLoop);
-  }, [draw, getNextSnakeMove, checkCollision]);
+  }, [draw, getNextSnakeMove, checkCollision, checkSnakePowerFoodCollision, spawnPowerFood]);
 
   // Start game
   const startGame = useCallback(() => {
     const game = gameRef.current;
     game.snake = initSnake();
+    game.powerFood = null;
     game.snakeSpeed = INITIAL_SNAKE_SPEED;
     game.lastMoveTime = 0;
     game.lastGrowTime = 0;
     game.lastSpeedTime = 0;
+    game.lastPowerFoodSpawnTime = 0;
     game.startTime = performance.now();
     game.isPlaying = true;
     game.hasStarted = true;
+    game.difficulty = difficulty;
 
     setGameState('playing');
     setScore(0);
     setSnakeLength(3);
     setSnakeSpeed(INITIAL_SNAKE_SPEED);
     setSubmitResult(null);
+    setPowerFoodActive(false);
 
     requestAnimationFrame(gameLoop);
-  }, [initSnake, gameLoop]);
+  }, [initSnake, gameLoop, difficulty]);
 
-  // Handle pointer move (mouse/touch)
+  // Handle pointer move
   const handlePointerMove = useCallback((e: ReactPointerEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -410,13 +564,11 @@ export const App = () => {
     const game = gameRef.current;
     const { cellSize } = game;
 
-    // Convert to grid coordinates (allow fractional for smooth movement)
     const gridX = Math.max(0, Math.min(GRID_SIZE - 1, x / cellSize));
     const gridY = Math.max(0, Math.min(GRID_SIZE - 1, y / cellSize));
 
     game.fruit = { x: gridX, y: gridY };
 
-    // Start game on first movement
     if (!game.hasStarted && gameRef.current.isPlaying === false && gameState === 'idle') {
       startGame();
     }
@@ -429,12 +581,11 @@ export const App = () => {
       const canvas = canvasRef.current;
       if (!container || !canvas) return;
 
-      // Get container dimensions
       const containerWidth = container.clientWidth;
       const containerHeight = container.clientHeight;
       
       // Use the smaller dimension for a square canvas
-      const size = Math.min(containerWidth, containerHeight - 120); // Leave room for HUD
+      const size = Math.min(containerWidth, containerHeight - 120);
       const canvasSize = Math.floor(size / GRID_SIZE) * GRID_SIZE;
       
       canvas.width = canvasSize;
@@ -445,7 +596,6 @@ export const App = () => {
       gameRef.current.cellSize = canvasSize / GRID_SIZE;
       gameRef.current.canvasSize = canvasSize;
 
-      // Redraw if not playing
       if (!gameRef.current.isPlaying) {
         const ctx = canvas.getContext('2d');
         if (ctx) draw(ctx);
@@ -455,18 +605,38 @@ export const App = () => {
     updateCanvasSize();
     window.addEventListener('resize', updateCanvasSize);
     return () => window.removeEventListener('resize', updateCanvasSize);
-  }, [draw]);
+  }, [draw, gameState]);
 
-  // Initial draw
+  // Initial draw when switching to game view
   useEffect(() => {
+    if (gameState === 'menu') return;
+    
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
     gameRef.current.snake = initSnake();
+    
+    // Ensure canvas is sized
+    const container = containerRef.current;
+    if (container) {
+      const containerWidth = container.clientWidth;
+      const containerHeight = container.clientHeight;
+      const size = Math.min(containerWidth, containerHeight - 120);
+      const canvasSize = Math.floor(size / GRID_SIZE) * GRID_SIZE;
+      
+      canvas.width = canvasSize;
+      canvas.height = canvasSize;
+      canvas.style.width = `${canvasSize}px`;
+      canvas.style.height = `${canvasSize}px`;
+
+      gameRef.current.cellSize = canvasSize / GRID_SIZE;
+      gameRef.current.canvasSize = canvasSize;
+    }
+    
     draw(ctx);
-  }, [initSnake, draw]);
+  }, [initSnake, draw, gameState]);
 
   // Submit score
   const handleSubmitScore = async () => {
@@ -480,7 +650,6 @@ export const App = () => {
       });
       setSubmitResult(result);
       
-      // Refresh leaderboard
       const newData = await trpc.init.get.query();
       setInitData(newData);
     } catch (err) {
@@ -498,54 +667,76 @@ export const App = () => {
     return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`;
   };
 
+  // Select difficulty and go to idle state
+  const selectDifficulty = (d: Difficulty) => {
+    setDifficulty(d);
+    gameRef.current.hasStarted = false;
+    gameRef.current.fruit = { x: GRID_SIZE / 2, y: GRID_SIZE / 2 };
+    gameRef.current.powerFood = null;
+    setGameState('idle');
+  };
+
   return (
     <div 
       ref={containerRef}
       className="relative flex min-h-screen flex-col items-center justify-center overflow-hidden"
       style={{ background: `linear-gradient(135deg, ${COLORS.background} 0%, #1a1f24 100%)` }}
     >
-      {/* HUD */}
-      <div className="absolute top-4 left-4 right-4 flex justify-between items-start z-10">
-        <div className="flex flex-col gap-1">
-          <div className="text-xs uppercase tracking-wider" style={{ color: COLORS.textMuted }}>
-            Time
-          </div>
-          <div className="text-2xl font-bold font-mono" style={{ color: COLORS.text }}>
-            {formatTime(score)}
-          </div>
-        </div>
-        
-        <div className="flex flex-col items-center gap-1">
-          <div className="text-xs uppercase tracking-wider" style={{ color: COLORS.textMuted }}>
-            Snake
-          </div>
-          <div className="flex items-center gap-3">
-            <div className="text-center">
-              <div className="text-lg font-bold" style={{ color: COLORS.snakeHead }}>
-                {snakeLength}
-              </div>
-              <div className="text-[10px]" style={{ color: COLORS.textMuted }}>length</div>
+      {/* HUD - only show during gameplay */}
+      {(gameState === 'playing' || gameState === 'idle') && (
+        <div className="absolute top-4 left-4 right-4 flex justify-between items-start z-10">
+          <div className="flex flex-col gap-1">
+            <div className="text-xs uppercase tracking-wider" style={{ color: COLORS.textMuted }}>
+              Time
             </div>
-            <div className="text-center">
-              <div className="text-lg font-bold" style={{ color: COLORS.danger }}>
-                {Math.round(1000 / snakeSpeed * 10) / 10}
-              </div>
-              <div className="text-[10px]" style={{ color: COLORS.textMuted }}>speed</div>
+            <div className="text-2xl font-bold font-mono" style={{ color: COLORS.text }}>
+              {formatTime(score)}
             </div>
           </div>
-        </div>
-        
-        <div className="flex flex-col items-end gap-1">
-          <div className="text-xs uppercase tracking-wider" style={{ color: COLORS.textMuted }}>
-            Best
+          
+          <div className="flex flex-col items-center gap-1">
+            <div 
+              className="text-xs uppercase tracking-wider px-2 py-0.5 rounded"
+              style={{ color: difficultyConfig.color, background: `${difficultyConfig.color}20` }}
+            >
+              {difficultyConfig.label}
+            </div>
+            <div className="flex items-center gap-3">
+              <div className="text-center">
+                <div className="text-lg font-bold" style={{ color: COLORS.snakeHead }}>
+                  {snakeLength}
+                </div>
+                <div className="text-[10px]" style={{ color: COLORS.textMuted }}>length</div>
+              </div>
+              <div className="text-center">
+                <div className="text-lg font-bold" style={{ color: COLORS.danger }}>
+                  {Math.round(1000 / snakeSpeed * 10) / 10}
+                </div>
+                <div className="text-[10px]" style={{ color: COLORS.textMuted }}>speed</div>
+              </div>
+              {difficultyConfig.hasPowerFood && (
+                <div className="text-center">
+                  <div className="text-lg" style={{ color: powerFoodActive ? COLORS.powerFood : COLORS.textMuted }}>
+                    {powerFoodActive ? '⭐' : '○'}
+                  </div>
+                  <div className="text-[10px]" style={{ color: COLORS.textMuted }}>food</div>
+                </div>
+              )}
+            </div>
           </div>
-          <div className="text-lg font-bold font-mono" style={{ color: COLORS.accent }}>
-            {formatTime(initData?.personalBest ?? 0)}
+          
+          <div className="flex flex-col items-end gap-1">
+            <div className="text-xs uppercase tracking-wider" style={{ color: COLORS.textMuted }}>
+              Best
+            </div>
+            <div className="text-lg font-bold font-mono" style={{ color: COLORS.accent }}>
+              {formatTime(initData?.personalBest ?? 0)}
+            </div>
           </div>
         </div>
-      </div>
+      )}
 
-      {/* Game Canvas */}
+      {/* Game Canvas - always rendered but hidden on menu */}
       <canvas
         ref={canvasRef}
         className="cursor-none touch-none rounded-lg shadow-2xl"
@@ -553,10 +744,69 @@ export const App = () => {
           border: `2px solid ${COLORS.gridLine}`,
           maxWidth: 'calc(100vw - 32px)',
           maxHeight: 'calc(100vh - 200px)',
+          display: gameState === 'menu' ? 'none' : 'block',
         }}
         onPointerMove={handlePointerMove}
         onPointerDown={handlePointerMove}
       />
+
+      {/* Menu - Difficulty Selection */}
+      {gameState === 'menu' && (
+        <div className="flex flex-col items-center justify-center p-6 w-full max-w-md">
+          <h1 className="text-3xl sm:text-4xl font-bold mb-2" style={{ color: COLORS.fruit }}>
+            🍎 Reverse Snake
+          </h1>
+          <p className="text-base sm:text-lg mb-8 text-center" style={{ color: COLORS.text }}>
+            You are the fruit. Don't get eaten!
+          </p>
+          
+          <div className="text-sm mb-4" style={{ color: COLORS.textMuted }}>
+            Select Difficulty
+          </div>
+          
+          <div className="flex flex-col gap-3 w-full">
+            {(Object.entries(DIFFICULTY_SETTINGS) as [Difficulty, DifficultyConfig][]).map(([key, config]) => (
+              <button
+                key={key}
+                onClick={() => selectDifficulty(key)}
+                className="w-full p-4 rounded-xl text-left transition-transform hover:scale-[1.02] active:scale-[0.98]"
+                style={{ 
+                  background: COLORS.grid,
+                  border: `2px solid ${config.color}40`,
+                }}
+              >
+                <div className="flex items-center justify-between mb-1">
+                  <span className="font-bold text-lg" style={{ color: config.color }}>
+                    {config.label}
+                  </span>
+                  {key === 'hard' && <span>🔥</span>}
+                  {key === 'medium' && <span>⭐</span>}
+                  {key === 'easy' && <span>🌱</span>}
+                </div>
+                <div className="text-sm" style={{ color: COLORS.textMuted }}>
+                  {config.description}
+                </div>
+              </button>
+            ))}
+          </div>
+          
+          <div className="mt-8 flex items-center gap-2">
+            <button
+              onClick={() => setShowLeaderboard(true)}
+              className="px-4 py-2 rounded-full text-sm"
+              style={{ background: COLORS.gridLine, color: COLORS.textMuted }}
+            >
+              🏆 Leaderboard
+            </button>
+          </div>
+          
+          {initData?.username && (
+            <div className="mt-4 text-sm" style={{ color: COLORS.textMuted }}>
+              Playing as {initData.username}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Idle overlay */}
       {gameState === 'idle' && (
@@ -564,37 +814,54 @@ export const App = () => {
           className="absolute inset-0 flex flex-col items-center justify-center bg-black/60 backdrop-blur-sm"
           style={{ pointerEvents: 'none' }}
         >
-          <h1 className="text-3xl font-bold mb-2" style={{ color: COLORS.fruit }}>
+          <h1 className="text-2xl sm:text-3xl font-bold mb-2 text-center" style={{ color: COLORS.fruit }}>
             🍎 Reverse Snake
-        </h1>
-          <p className="text-lg mb-6" style={{ color: COLORS.text }}>
+          </h1>
+          <p className="text-base sm:text-lg mb-2 text-center" style={{ color: COLORS.text }}>
             You are the fruit. Don't get eaten!
           </p>
           <div 
+            className="text-sm mb-6 px-3 py-1 rounded-full"
+            style={{ background: `${difficultyConfig.color}30`, color: difficultyConfig.color }}
+          >
+            {difficultyConfig.label} Mode
+          </div>
+          <div 
             className="px-6 py-3 rounded-full text-lg font-semibold animate-pulse"
-            style={{ 
-              background: COLORS.accent,
-              color: COLORS.text,
-            }}
+            style={{ background: COLORS.accent, color: COLORS.text }}
           >
             Move to Start
           </div>
-          <p className="mt-4 text-sm" style={{ color: COLORS.textMuted }}>
+          <p className="mt-4 text-sm text-center" style={{ color: COLORS.textMuted }}>
             Touch or move mouse to control the fruit
-        </p>
-      </div>
+          </p>
+          <button
+            onClick={() => setGameState('menu')}
+            className="mt-4 text-sm underline"
+            style={{ color: COLORS.textMuted, pointerEvents: 'auto' }}
+          >
+            ← Back to Menu
+          </button>
+        </div>
       )}
 
       {/* Game Over overlay */}
       {gameState === 'gameover' && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/80 backdrop-blur-sm z-20">
+        <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/80 backdrop-blur-sm z-20 p-4">
           <div 
-            className="p-6 rounded-2xl max-w-sm w-full mx-4"
+            className="p-6 rounded-2xl max-w-sm w-full"
             style={{ background: COLORS.grid }}
           >
             <h2 className="text-2xl font-bold text-center mb-4" style={{ color: COLORS.danger }}>
               🐍 Game Over!
             </h2>
+            
+            <div 
+              className="text-center text-sm mb-4 px-2 py-1 rounded"
+              style={{ background: `${difficultyConfig.color}20`, color: difficultyConfig.color }}
+            >
+              {difficultyConfig.label} Mode
+            </div>
             
             <div className="grid grid-cols-2 gap-4 mb-6">
               <div className="text-center p-3 rounded-lg" style={{ background: COLORS.background }}>
@@ -651,10 +918,12 @@ export const App = () => {
                   {submitting ? 'Submitting...' : 'Submit Score'}
                 </button>
               )}
-        <button
+              <button
                 onClick={() => {
                   gameRef.current.hasStarted = false;
                   gameRef.current.fruit = { x: GRID_SIZE / 2, y: GRID_SIZE / 2 };
+                  gameRef.current.powerFood = null;
+                  setPowerFoodActive(false);
                   setGameState('idle');
                   const canvas = canvasRef.current;
                   if (canvas) {
@@ -666,23 +935,30 @@ export const App = () => {
                   }
                 }}
                 className="w-full py-3 rounded-lg font-semibold transition-colors"
-                style={{ 
-                  background: COLORS.gridLine,
-                  color: COLORS.text,
-                }}
+                style={{ background: COLORS.gridLine, color: COLORS.text }}
               >
                 Play Again
-        </button>
-        <button
+              </button>
+              <button
+                onClick={() => {
+                  gameRef.current.hasStarted = false;
+                  gameRef.current.powerFood = null;
+                  setPowerFoodActive(false);
+                  setGameState('menu');
+                }}
+                className="w-full py-2 rounded-lg font-medium"
+                style={{ color: COLORS.textMuted }}
+              >
+                Change Difficulty
+              </button>
+              <button
                 onClick={() => setShowLeaderboard(true)}
                 className="w-full py-2 rounded-lg font-medium"
-                style={{ 
-                  color: COLORS.textMuted,
-                }}
+                style={{ color: COLORS.textMuted }}
               >
                 View Leaderboard
-        </button>
-      </div>
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -690,11 +966,11 @@ export const App = () => {
       {/* Leaderboard Modal */}
       {showLeaderboard && (
         <div 
-          className="absolute inset-0 flex items-center justify-center bg-black/80 backdrop-blur-sm z-30"
+          className="absolute inset-0 flex items-center justify-center bg-black/80 backdrop-blur-sm z-30 p-4"
           onClick={() => setShowLeaderboard(false)}
         >
           <div 
-            className="p-6 rounded-2xl max-w-sm w-full mx-4 max-h-[80vh] overflow-auto"
+            className="p-6 rounded-2xl max-w-sm w-full max-h-[80vh] overflow-auto"
             style={{ background: COLORS.grid }}
             onClick={e => e.stopPropagation()}
           >
@@ -715,7 +991,7 @@ export const App = () => {
                     }}
                   >
                     <div 
-                      className="w-8 h-8 rounded-full flex items-center justify-center font-bold"
+                      className="w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm"
                       style={{ 
                         background: index === 0 ? '#ffd700' : index === 1 ? '#c0c0c0' : index === 2 ? '#cd7f32' : COLORS.gridLine,
                         color: index < 3 ? '#000' : COLORS.text,
@@ -745,38 +1021,34 @@ export const App = () => {
               </div>
             )}
 
-        <button
+            <button
               onClick={() => setShowLeaderboard(false)}
               className="w-full mt-4 py-2 rounded-lg font-medium"
-              style={{ 
-                background: COLORS.gridLine,
-                color: COLORS.text,
-              }}
+              style={{ background: COLORS.gridLine, color: COLORS.text }}
             >
               Close
-        </button>
+            </button>
           </div>
         </div>
       )}
 
       {/* Footer */}
-      <div className="absolute bottom-4 flex items-center gap-2">
-        <button
-          onClick={() => setShowLeaderboard(true)}
-          className="px-3 py-1 rounded-full text-sm"
-          style={{ 
-            background: COLORS.gridLine,
-            color: COLORS.textMuted,
-          }}
-        >
-          🏆 Leaderboard
-        </button>
-        {initData?.username && (
-          <span className="text-sm" style={{ color: COLORS.textMuted }}>
-            Playing as {initData.username}
-          </span>
-        )}
-      </div>
+      {(gameState === 'playing' || gameState === 'idle') && (
+        <div className="absolute bottom-4 flex items-center gap-2">
+          <button
+            onClick={() => setShowLeaderboard(true)}
+            className="px-3 py-1 rounded-full text-sm"
+            style={{ background: COLORS.gridLine, color: COLORS.textMuted }}
+          >
+            🏆 Leaderboard
+          </button>
+          {initData?.username && (
+            <span className="text-sm" style={{ color: COLORS.textMuted }}>
+              Playing as {initData.username}
+            </span>
+          )}
+        </div>
+      )}
     </div>
   );
 };
