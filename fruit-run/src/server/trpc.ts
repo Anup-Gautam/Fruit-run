@@ -2,7 +2,21 @@ import { initTRPC } from '@trpc/server';
 import { transformer } from '../transformer';
 import { Context } from './context';
 import { context, reddit } from '@devvit/web/server';
-import { submitScore, getLeaderboard, getPersonalBest } from './core/leaderboard';
+import { 
+  getStoryProgress, 
+  canPlay,
+  useTry, 
+  completeLevel, 
+  getStoryLeaderboard,
+  getStoryRank 
+} from './core/progress';
+import { 
+  submitSurvivalScore, 
+  getSurvivalLeaderboard, 
+  getPersonalBest,
+  getAllPersonalBests,
+  getSurvivalRank 
+} from './core/survival';
 import { z } from 'zod';
 
 /**
@@ -21,40 +35,87 @@ export const router = t.router;
 export const publicProcedure = t.procedure;
 
 export const appRouter = t.router({
+  // Initialize - get all data needed for main menu
   init: t.router({
     get: publicProcedure.query(async () => {
-      const [username, personalBest, leaderboard] = await Promise.all([
+      const [username, storyProgress, storyLeaderboard] = await Promise.all([
         reddit.getCurrentUsername(),
-        getPersonalBest(),
-        getLeaderboard(10),
+        getStoryProgress(),
+        getStoryLeaderboard(10),
       ]);
+
+      // Get personal bests for unlocked levels
+      const personalBests = await getAllPersonalBests(storyProgress.currentLevel);
 
       return {
         postId: context.postId,
         username,
-        personalBest,
-        leaderboard,
+        storyProgress,
+        storyLeaderboard,
+        personalBests,
       };
     }),
   }),
-  leaderboard: t.router({
-    submit: publicProcedure
-      .input(z.object({
-        score: z.number(),
-        snakeLength: z.number(),
-      }))
+
+  // Story Mode progress
+  story: t.router({
+    getProgress: publicProcedure.query(async () => {
+      return await getStoryProgress();
+    }),
+    canPlay: publicProcedure.query(async () => {
+      return await canPlay();
+    }),
+    useTry: publicProcedure.mutation(async () => {
+      return await useTry();
+    }),
+    completeLevel: publicProcedure
+      .input(z.object({ level: z.number() }))
       .mutation(async ({ input }) => {
-        const result = await submitScore(input.score, input.snakeLength);
-        return result;
+        return await completeLevel(input.level);
       }),
-    get: publicProcedure
+    getLeaderboard: publicProcedure
       .input(z.number().optional().default(10))
       .query(async ({ input }) => {
-        return await getLeaderboard(input);
+        return await getStoryLeaderboard(input);
       }),
-    personalBest: publicProcedure.query(async () => {
-      return await getPersonalBest();
+    getRank: publicProcedure.query(async () => {
+      return await getStoryRank();
     }),
+  }),
+
+  // Survival Mode scores
+  survival: t.router({
+    submitScore: publicProcedure
+      .input(z.object({
+        level: z.number(),
+        score: z.number(),
+      }))
+      .mutation(async ({ input }) => {
+        return await submitSurvivalScore(input.level, input.score);
+      }),
+    getLeaderboard: publicProcedure
+      .input(z.object({
+        level: z.number(),
+        limit: z.number().optional().default(10),
+      }))
+      .query(async ({ input }) => {
+        return await getSurvivalLeaderboard(input.level, input.limit);
+      }),
+    getPersonalBest: publicProcedure
+      .input(z.object({ level: z.number() }))
+      .query(async ({ input }) => {
+        return await getPersonalBest(input.level);
+      }),
+    getAllPersonalBests: publicProcedure
+      .input(z.object({ maxLevel: z.number() }))
+      .query(async ({ input }) => {
+        return await getAllPersonalBests(input.maxLevel);
+      }),
+    getRank: publicProcedure
+      .input(z.object({ level: z.number() }))
+      .query(async ({ input }) => {
+        return await getSurvivalRank(input.level);
+      }),
   }),
 });
 
