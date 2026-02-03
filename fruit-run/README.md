@@ -60,18 +60,92 @@ Some levels feature a snake that **shoots projectiles**:
 - Getting hit by a projectile = instant game over
 - Later levels have faster projectiles or spread patterns!
 
-## 📋 Level Overview
+## 📋 Complete Level Guide
 
-| Level | Name | Time | Special Features |
-|-------|------|------|------------------|
-| 1 | Classic | 1:00 | Standard gameplay |
-| 5 | Sniper | 1:00 | 🎯 Projectiles every 5s |
-| 7 | Marathon | 3:00 | Long endurance challenge |
-| 15 | Micro | 1:00 | 📦 Tiny 10x10 arena |
-| 17 | Ambush | 1:00 | 👻 Snake turns invisible |
-| 19 | Barrage | 1:00 | 🎯 3 projectiles at once |
-| 24 | Zen | 1:00 | Arena shrinks over time |
-| 30 | Ultimate | 3:00 | Everything combined! |
+All 30 levels with their unique challenges. **Speed always increases until cap (30ms)!**
+
+| Lv | Name | Start | Max | Food | Growth | Grid | Time | Speed |
+|----|------|-------|-----|------|--------|------|------|-------|
+| 1 | 🎮 Classic | 3 | 20 | 3.5s | +1/food | 22×22 | 0:45 | +5/2s |
+| 2 | ⚡ Speed Demon | 3 | 20 | 3.5s | +1/food | 22×22 | 0:45 | +5/2s (fast start) |
+| 3 | 📦 Tiny Arena | 3 | 14 | 4s | +1/food | 18×18 | 0:50 | +5/2s |
+| 4 | 🐢 Accelerator | 3 | 20 | 4s | +1/food | 22×22 | 0:50 | +5/2s (slow start) |
+| 5 | 🎯 Sniper | 4 | 20 | 4s | +1/food | 22×22 | 0:55 | +5/2s |
+| 6 | ⭐ Power Surge | 4 | 20 | 3s | +2/food | 22×22 | 0:55 | +5/2s + food |
+| 7 | 🏃 Marathon | 4 | 20 | 4.5s | +1/food | 22×22 | 2:00 | +5/2s |
+| 8 | 😰 Claustrophobia | 4 | 9 | 4.5s | +1/food | 14×14 | 0:55 | +3/3s |
+| 9 | 🍔 Glutton | 4 | 18 | 4s | +2/food | 20×20 | 0:55 | +5/2s |
+| 10 | 🚀 Hyperspeed | 5 | 18 | 4s | +1/1.5s | 20×20 | 0:50 | +5/2s (fast start) |
+| 11 | 🐍 Long Boi | 8 | 18 | 4s | +1/food | 20×20 | 0:55 | +5/2s |
+| 12 | 🏜️ Famine | 5 | 18 | 6s | +1/food | 20×20 | 1:00 | +5/2s |
+| 13 | 🍕 Feast | 5 | 18 | 3s | +3/food | 20×20 | 0:55 | +5/2s + food |
+| 14 | 🏹 Marksman | 6 | 18 | 4s | +1/food | 20×20 | 1:00 | +5/2s |
+| 15 | 🔬 Micro | 4 | 8 | 4.5s | +1/food | 12×12 | 0:45 | +3/3s |
+| 16 | 🧘 Patience | 6 | 18 | 4s | +1/1.5s | 20×20 | 1:00 | +5/2s |
+| 17 | 👻 Ambush | 6 | 18 | 4.5s | +1/food | 20×20 | 1:00 | +5/2s |
+| 18 | 🦖 Titan | 6 | 18 | 5s | +1/food | 20×20 | 1:00 | +5/2s |
+| 19 | 💥 Barrage | 7 | 18 | 4s | +1/food | 20×20 | 1:05 | +5/2s |
+| 20 | 📈 Momentum | 7 | 18 | 4.5s | +1/food | 20×20 | 1:00 | +5/2s |
+| 21 | 🎁 Risk/Reward | 6 | 18 | 5.5s | +1/food | 20×20 | 1:10 | +5/2s |
+| 22 | 🦈 Predator | 7 | 18 | 5s | +1/food | 20×20 | 1:00 | +5/2s |
+| 23 | 🎲 Chaos | 7 | 18 | 4s | +1/food | 20×20 | 1:05 | +5/2s + random |
+| 24 | ☯️ Zen | 6 | 20 | 5s | +1/food | 22→14 | 1:15 | +5/2s |
+| 25 | 😱 Nightmare | 6 | 8 | 4.5s | +1/food | 12×12 | 0:45 | +3/3s (fast start) |
+| 26 | 🔫 Machine Gun | 7 | 18 | 4s | +1/food | 20×20 | 1:00 | +5/2s |
+| 27 | 💪 Endurance | 7 | 18 | 6s | +1/food | 20×20 | 2:30 | +5/2s |
+| 28 | 🌱 Rapid Growth | 6 | 18 | 4s | +1/1s | 20×20 | 0:55 | +5/2s |
+| 29 | ⚔️ Final Form | 8 | 8 | none | none | 20×20 | 0:45 | +5/2s (90ms start) |
+| 30 | 👑 Ultimate | 8 | 9 | 4s | +1/1.5s | 14×14 | 2:00 | +3/3s |
+
+### Speed Rules
+
+| Grid Size | Speed Increase | Max Speed |
+|-----------|----------------|-----------|
+| > 15 (18, 20, 22) | **+5ms every 2 seconds** | 30ms |
+| ≤ 15 (12, 14, 15) | +3ms every 3 seconds | 30ms |
+
+### Snake Length Hard Caps by Grid Size
+
+| Grid | Max Length |
+|------|------------|
+| 22×22 | 20 |
+| 20×20 | 18 |
+| 18×18 | 14 |
+| 15×15 | 10 |
+| 14×14 | 9 |
+| 12×12 | 8 |
+| 10×10 | 6 |
+
+### Column Legend
+
+| Column | Meaning |
+|--------|---------|
+| **Start** | Initial snake length (segments) |
+| **Max** | Hard cap - snake cannot exceed this length |
+| **Food** | Power food spawn interval |
+| **Growth** | How snake grows: `/food` = per food eaten, `/Xs` = time-based |
+| **Speed** | Speed increase rate (+2/3s = 2ms faster every 3 seconds) |
+
+### Special Modifiers
+
+| Level | Modifier | Effect |
+|-------|----------|--------|
+| 7, 20 | 📈 **Momentum** | Extra aggressive acceleration |
+| 17 | 👻 **Invisible** | Snake turns invisible for 0.5s every 3s |
+| 18 | 🦖 **Titan** | Snake segments are 2x larger |
+| 22 | 🦈 **Perfect AI** | Snake always takes the optimal path |
+| 23 | 🎲 **Chaos** | Random speed bursts on top of base increase |
+| 24 | ☯️ **Shrinking** | Arena shrinks from 22×22 to 14×14 |
+
+### Projectile Levels
+
+| Level | Name | Projectiles | Interval |
+|-------|------|-------------|----------|
+| 5 | Sniper | 1 | 5s |
+| 14 | Marksman | 1 | 4s |
+| 19 | Barrage | 3 (spread) | 4.5s |
+| 26 | Machine Gun | 1 | 3s |
+| 30 | Ultimate | 2 | 4s |
 
 ## 🏆 Leaderboards
 

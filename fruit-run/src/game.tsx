@@ -11,7 +11,7 @@ import { LEVELS, getLevel, TOTAL_LEVELS, type LevelConfig } from './game/levels'
 type RouterOutputs = inferRouterOutputs<AppRouter>;
 
 // ============ GAME CONSTANTS ============
-const MIN_SNAKE_SPEED = 40;
+const MIN_SNAKE_SPEED = 30; // Hard cap - snake cannot go faster than 30ms per move
 const FRUIT_RADIUS_RATIO = 0.4;
 const COLLISION_TOLERANCE = 0.6;
 const POWER_FOOD_DURATION = 6000;
@@ -127,6 +127,17 @@ export const App = () => {
     }
   };
 
+  // Load survival leaderboard
+  const loadSurvivalLeaderboard = async (level: number) => {
+    try {
+      const data = await trpc.survival.getLeaderboard.query({ level, limit: 10 });
+      setSurvivalLeaderboard(data);
+      setLeaderboardLevel(level);
+    } catch (err) {
+      console.error('Failed to load leaderboard:', err);
+    }
+  };
+
   // Initialize snake for a given level
   const initSnake = useCallback((config: LevelConfig) => {
     const snake: Point[] = [];
@@ -138,9 +149,11 @@ export const App = () => {
     return snake;
   }, []);
 
-  // Calculate Manhattan distance (better for grid-based pathfinding)
-  const manhattanDistance = (a: Point, b: Point) => {
-    return Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
+  // Calculate Euclidean distance (for precise targeting of fractional positions)
+  const euclideanDistance = (a: Point, b: Point) => {
+    const dx = a.x - b.x;
+    const dy = a.y - b.y;
+    return Math.sqrt(dx * dx + dy * dy);
   };
 
   // Spawn power food
@@ -161,12 +174,14 @@ export const App = () => {
     return { x: gridSize - 2, y: gridSize - 2, spawnTime: performance.now() };
   }, []);
 
-  // A* pathfinding for snake - returns next move toward target
+  // Snake AI - uses Euclidean distance to track fractional fruit positions
+  // This prevents the "stuck between gridlines" bug
   const getNextSnakeMove = useCallback((head: Point, target: Point, gridSize: number, isPerfectAI: boolean): Point => {
-    // Target position in grid coordinates (floor the fractional position)
-    const targetCell = { x: Math.floor(target.x), y: Math.floor(target.y) };
+    // Use the ACTUAL target position (not floored) for distance calculations
+    // This allows the snake to properly track a fruit between grid cells
+    const targetX = target.x;
+    const targetY = target.y;
     
-    // Simple greedy approach with A* heuristic
     const directions = [
       { x: 1, y: 0 },   // right
       { x: -1, y: 0 },  // left
@@ -174,25 +189,10 @@ export const App = () => {
       { x: 0, y: -1 },  // up
     ];
 
-    // Add slight randomness to direction order (unless perfect AI)
-    if (!isPerfectAI && Math.random() < 0.15) {
-      // Occasionally shuffle to add unpredictability
-      for (let i = directions.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        const temp = directions[i]!;
-        directions[i] = directions[j]!;
-        directions[j] = temp;
-      }
-    } else {
-      // Sort directions by which one gets us closest to target
-      directions.sort((a, b) => {
-        const posA = { x: head.x + a.x, y: head.y + a.y };
-        const posB = { x: head.x + b.x, y: head.y + b.y };
-        return manhattanDistance(posA, targetCell) - manhattanDistance(posB, targetCell);
-      });
-    }
+    // Calculate distances for each possible move
+    type MoveOption = { dir: Point; distance: number; newPos: Point };
+    const validMoves: MoveOption[] = [];
 
-    // Try each direction, pick the one that gets us closest
     for (const dir of directions) {
       const newPos = {
         x: head.x + dir.x,
@@ -204,12 +204,33 @@ export const App = () => {
         continue;
       }
 
-      // Valid move found - return it
-      return newPos;
+      // Calculate distance from CENTER of new cell to the actual target position
+      const cellCenter = { x: newPos.x + 0.5, y: newPos.y + 0.5 };
+      const distance = euclideanDistance(cellCenter, { x: targetX, y: targetY });
+      
+      validMoves.push({ dir, distance, newPos });
     }
 
-    // No valid move, stay in place (shouldn't happen)
-    return head;
+    if (validMoves.length === 0) {
+      return head; // No valid moves
+    }
+
+    // Sort by distance (closest first)
+    validMoves.sort((a, b) => a.distance - b.distance);
+
+    // Perfect AI always picks the best move
+    if (isPerfectAI) {
+      return validMoves[0]!.newPos;
+    }
+
+    // Normal AI: Usually picks best, occasionally picks second best for unpredictability
+    // But NEVER random - always moving toward target
+    if (validMoves.length > 1 && Math.random() < 0.08) {
+      // 8% chance to pick second best move (still moves toward target)
+      return validMoves[1]!.newPos;
+    }
+
+    return validMoves[0]!.newPos;
   }, []);
 
   // Check collision with snake
@@ -573,9 +594,10 @@ export const App = () => {
       setSnakeSpeed(game.snakeSpeed);
     }
 
-    // Snake growth
+    // Snake growth (respects max length cap)
     if (config.growInterval > 0 && timestamp - game.lastGrowTime >= config.growInterval) {
       for (let i = 0; i < config.growAmount; i++) {
+        if (game.snake.length >= config.maxSnakeLength) break; // Hard cap
         const tail = game.snake[game.snake.length - 1];
         if (tail) {
           game.snake.push({ x: tail.x, y: tail.y });
@@ -659,7 +681,13 @@ export const App = () => {
       const head = game.snake[0];
       if (head) {
         const isPerfectAI = config.specialModifier === 'perfect_ai';
-        const newHead = getNextSnakeMove(head, game.fruit, game.currentArenaSize, isPerfectAI);
+        
+        // Snake ALWAYS prioritizes power food if it exists
+        const target = game.powerFood 
+          ? { x: game.powerFood.x + 0.5, y: game.powerFood.y + 0.5 }  // Target center of power food cell
+          : game.fruit;  // Otherwise target the player
+        
+        const newHead = getNextSnakeMove(head, target, game.currentArenaSize, isPerfectAI);
         
         game.snake.unshift(newHead);
         game.snake.pop();
@@ -669,7 +697,9 @@ export const App = () => {
           game.snakeSpeed = Math.max(MIN_SNAKE_SPEED, game.snakeSpeed - config.powerFoodSpeedBoost);
           setSnakeSpeed(game.snakeSpeed);
           
+          // Grow snake (respects max length cap)
           for (let i = 0; i < config.powerFoodSizeBoost; i++) {
+            if (game.snake.length >= config.maxSnakeLength) break; // Hard cap
             const tail = game.snake[game.snake.length - 1];
             if (tail) {
               game.snake.push({ x: tail.x, y: tail.y });
@@ -719,12 +749,14 @@ export const App = () => {
           setLastSubmitResult(result);
           refreshData();
         });
-      } else if (game.gameMode === 'story') {
-        // Consume a try on story mode failure
-        trpc.story.useTry.mutate().then(() => {
-          refreshData();
-        });
       }
+      // TESTING MODE: Don't consume tries on failure - uncomment for production
+      // else if (game.gameMode === 'story') {
+      //   // Consume a try on story mode failure
+      //   trpc.story.useTry.mutate().then(() => {
+      //     refreshData();
+      //   });
+      // }
     };
 
     // Check collisions
@@ -757,13 +789,14 @@ export const App = () => {
     if (!config) return;
 
     // For story mode, check if user can play (don't consume try yet - only on failure)
-    if (mode === 'story') {
-      const canPlayResult = await trpc.story.canPlay.query();
-      if (!canPlayResult.canPlay) {
-        alert('No tries remaining today! Come back tomorrow.');
-        return;
-      }
-    }
+    // TESTING MODE: Unlimited tries - remove this check for production
+    // if (mode === 'story') {
+    //   const canPlayResult = await trpc.story.canPlay.query();
+    //   if (!canPlayResult.canPlay) {
+    //     alert('No tries remaining today! Come back tomorrow.');
+    //     return;
+    //   }
+    // }
 
     const game = gameRef.current;
     game.levelConfig = config;
@@ -857,16 +890,6 @@ export const App = () => {
     game.fruit = { x: gridX, y: gridY };
   }, []);
 
-  // Load survival leaderboard
-  const loadSurvivalLeaderboard = async (level: number) => {
-    try {
-      const data = await trpc.survival.getLeaderboard.query({ level, limit: 10 });
-      setSurvivalLeaderboard(data);
-      setLeaderboardLevel(level);
-    } catch (err) {
-      console.error('Failed to load leaderboard:', err);
-    }
-  };
 
   // Format time
   const formatTime = (ms: number) => {
@@ -884,7 +907,7 @@ export const App = () => {
     return `${minutes}:${seconds.toString().padStart(2, '0')}`;
   };
 
-  // Get unlocked levels count
+  // Get unlocked levels count (based on story progress)
   const unlockedLevels = initData?.storyProgress.currentLevel ?? 1;
 
   return (
@@ -1413,7 +1436,7 @@ export const App = () => {
                   className="w-full p-2 rounded-lg"
                   style={{ background: COLORS.background, color: COLORS.text, border: `1px solid ${COLORS.gridLine}` }}
                 >
-                  {LEVELS.filter(l => l.id < unlockedLevels).map(level => (
+                  {LEVELS.filter(l => l.id <= unlockedLevels).map(level => (
                     <option key={level.id} value={level.id}>
                       Level {level.id}: {level.name}
                     </option>
