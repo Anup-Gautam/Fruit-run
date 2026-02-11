@@ -1,4 +1,5 @@
 import './index.css';
+import logoUrl from './logo.png';
 
 import { context, requestExpandedMode } from '@devvit/web/client';
 import { StrictMode, useState, useEffect } from 'react';
@@ -181,7 +182,12 @@ export const Splash = () => {
         </div>
       )}
 
-      {/* Game Title - Compact */}
+      {/* Logo & Title */}
+      <img
+        src={logoUrl}
+        alt="Reverse Snake"
+        className="w-24 h-24 object-contain mb-2"
+      />
       <div className="flex items-center gap-2 mb-3">
         <span className="text-3xl">🍎</span>
         <h1 className="text-xl font-bold" style={{ color: COLORS.text }}>
@@ -198,12 +204,8 @@ export const Splash = () => {
             <div className="flex items-center gap-1">
               <span style={{ color: COLORS.textMuted }}>Lives:</span>
               {[1, 2, 3].map(i => (
-                <span 
-                  key={i}
-                  className="text-sm"
-                  style={{ color: i <= data.storyProgress.triesRemaining ? COLORS.danger : COLORS.gridLine }}
-                >
-                  ❤️
+                <span key={i} className="text-sm">
+                  {i <= data.storyProgress.triesRemaining ? '❤️' : '🖤'}
                 </span>
               ))}
             </div>

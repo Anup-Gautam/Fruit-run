@@ -28,7 +28,7 @@ Survive without touching the snake or getting hit by projectiles!
 
 ### 📖 Story Mode
 - **30 unique levels** with different challenges
-- **3 tries per day** - use them wisely!
+- **3 lives per day** - each game attempt costs 1 life (win or lose)
 - Beat a level to **permanently unlock** the next one
 - Survive for the required time (1 minute or 3 minutes) to complete each level
 
@@ -156,6 +156,12 @@ See which players have progressed the furthest in Story Mode.
 Each level has its own leaderboard for survival high scores. Compete with others on your favorite levels!
 
 ## 📝 Changelog
+
+### Version 0.0.28
+- **Lives System Finalized**: Each Story Mode game attempt costs 1 life (win or lose)
+- 3 lives = 3 total game attempts per day (not 3 deaths)
+- Updated Devvit packages to 0.12.11
+- Survival mode levels locked based on story progress
 
 ### Version 1.0.0 (Major Update)
 - Complete game redesign with Story Mode and Survival Mode

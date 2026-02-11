@@ -1,4 +1,5 @@
 import './index.css';
+import logoUrl from './logo.png';
 
 import type { PointerEvent as ReactPointerEvent } from 'react';
 import { StrictMode, useEffect, useRef, useState, useCallback } from 'react';
@@ -67,6 +68,7 @@ export const App = () => {
   const [playerFoodCount, setPlayerFoodCount] = useState(0);
   const [gameResult, setGameResult] = useState<'win' | 'lose' | null>(null);
   const [currentLevelConfig, setCurrentLevelConfig] = useState<LevelConfig | null>(null);
+  const [isStartingGame, setIsStartingGame] = useState(false);
   
   // Server Data
   const [initData, setInitData] = useState<RouterOutputs['init']['get'] | null>(null);
@@ -106,14 +108,14 @@ export const App = () => {
 
   // Fetch initial data
   useEffect(() => {
-    const fetchInit = async () => {
+  const fetchInit = async () => {
       try {
-        const data = await trpc.init.get.query();
+    const data = await trpc.init.get.query();
         setInitData(data);
       } catch (err) {
         console.error('Failed to fetch init data:', err);
       }
-    };
+  };
     void fetchInit();
   }, []);
 
@@ -721,15 +723,25 @@ export const App = () => {
       game.playerFoodCount++;
       setPlayerFoodCount(game.playerFoodCount);
       
-      // Decrease snake length every 2 foods
-      if (game.playerFoodCount % 2 === 0 && game.snake.length > 1) {
+      // SURVIVAL MODE: After 1 minute, power food has bigger impact
+      const survivalBoostedFood = game.gameMode === 'survival' && elapsedTime >= 60000;
+      
+      // Decrease snake length: every 2 foods normally, every 1 food in survival boost mode
+      const lengthReductionInterval = survivalBoostedFood ? 1 : 2;
+      if (game.playerFoodCount % lengthReductionInterval === 0 && game.snake.length > 1) {
         game.snake.pop();
+        // In boosted mode, remove an extra segment
+        if (survivalBoostedFood && game.snake.length > 1) {
+          game.snake.pop();
+        }
         setSnakeLength(game.snake.length);
       }
       
-      // Decrease snake speed every 4 foods (make snake slower)
-      if (game.playerFoodCount % 4 === 0) {
-        game.snakeSpeed = Math.min(300, game.snakeSpeed + 2);
+      // Decrease snake speed: every 4 foods normally, every 2 foods in survival boost mode
+      const speedReductionInterval = survivalBoostedFood ? 2 : 4;
+      const speedReductionAmount = survivalBoostedFood ? 5 : 2;
+      if (game.playerFoodCount % speedReductionInterval === 0) {
+        game.snakeSpeed = Math.min(300, game.snakeSpeed + speedReductionAmount);
         setSnakeSpeed(game.snakeSpeed);
       }
       
@@ -750,13 +762,8 @@ export const App = () => {
           refreshData();
         });
       }
-      // TESTING MODE: Don't consume tries on failure - uncomment for production
-      // else if (game.gameMode === 'story') {
-      //   // Consume a try on story mode failure
-      //   trpc.story.useTry.mutate().then(() => {
-      //     refreshData();
-      //   });
-      // }
+      // Note: Life is consumed at game START, not on loss
+      // This allows 3 total game attempts per day regardless of outcome
     };
 
     // Check collisions
@@ -785,18 +792,32 @@ export const App = () => {
 
   // Start game
   const startGame = useCallback(async (mode: GameMode, levelId: number) => {
+    // Prevent multiple simultaneous game starts
+    if (isStartingGame) return;
+    
     const config = getLevel(levelId);
     if (!config) return;
 
-    // For story mode, check if user can play (don't consume try yet - only on failure)
-    // TESTING MODE: Unlimited tries - remove this check for production
-    // if (mode === 'story') {
-    //   const canPlayResult = await trpc.story.canPlay.query();
-    //   if (!canPlayResult.canPlay) {
-    //     alert('No tries remaining today! Come back tomorrow.');
-    //     return;
-    //   }
-    // }
+    // For story mode, check if user can play and consume a life immediately
+    // Each game attempt costs 1 life (win or lose)
+    if (mode === 'story') {
+      setIsStartingGame(true);
+      try {
+        const canPlayResult = await trpc.story.canPlay.query();
+        if (!canPlayResult.canPlay) {
+          alert('No lives remaining today! Come back tomorrow.');
+          setIsStartingGame(false);
+          return;
+        }
+        // Consume a life when starting the game
+        await trpc.story.useTry.mutate();
+        await refreshData(); // Await to ensure hearts update immediately
+      } catch (err) {
+        console.error('Error starting game:', err);
+        setIsStartingGame(false);
+        return;
+      }
+    }
 
     const game = gameRef.current;
     game.levelConfig = config;
@@ -830,6 +851,7 @@ export const App = () => {
     setPlayerFoodCount(0);
     setGameResult(null);
     setLastSubmitResult(null);
+    setIsStartingGame(false);
     setScreen('playing');
 
     // Use requestAnimationFrame to ensure DOM is ready
@@ -865,7 +887,7 @@ export const App = () => {
         requestAnimationFrame(gameLoop);
       }
     });
-  }, [initSnake, gameLoop, refreshData]);
+  }, [initSnake, gameLoop, refreshData, isStartingGame]);
 
   // Handle pointer move
   const handlePointerMove = useCallback((e: ReactPointerEvent<HTMLCanvasElement>) => {
@@ -919,9 +941,14 @@ export const App = () => {
       {/* ============ MAIN MENU ============ */}
       {screen === 'menu' && (
         <div className="flex flex-col items-center justify-center p-3 w-full max-w-sm h-full max-h-screen">
+          <img
+            src={logoUrl}
+            alt="Reverse Snake"
+            className="w-20 h-20 object-contain mb-2"
+          />
           <h1 className="text-2xl font-bold mb-1 text-center" style={{ color: COLORS.fruit }}>
             🍎 Reverse Snake 🐍
-          </h1>
+        </h1>
           <p className="text-xs mb-3 text-center" style={{ color: COLORS.textMuted }}>
             You are the fruit. Don't get eaten!
           </p>
@@ -934,14 +961,11 @@ export const App = () => {
                 <div className="flex items-center gap-1">
                   <span className="text-xs" style={{ color: COLORS.textMuted }}>Lives:</span>
                   {[1, 2, 3].map(i => (
-                    <span 
-                      key={i}
-                      style={{ color: i <= initData.storyProgress.triesRemaining ? COLORS.danger : COLORS.gridLine }}
-                    >
-                      ❤️
+                    <span key={i}>
+                      {i <= initData.storyProgress.triesRemaining ? '❤️' : '🖤'}
                     </span>
                   ))}
-                </div>
+      </div>
               </div>
               <div className="w-full bg-black/30 rounded-full h-1.5">
                 <div 
@@ -957,7 +981,7 @@ export const App = () => {
 
           {/* Mode Buttons - More Compact */}
           <div className="flex flex-col gap-2 w-full mb-3">
-            <button
+        <button
               onClick={() => setScreen('story_select')}
               className="w-full p-3 rounded-xl text-left transition-transform hover:scale-[1.02] active:scale-[0.98]"
               style={{ background: COLORS.grid, border: `2px solid ${COLORS.success}40` }}
@@ -971,7 +995,7 @@ export const App = () => {
                 </div>
                 <span className="text-xl">→</span>
               </div>
-            </button>
+        </button>
 
             <button
               onClick={() => setScreen('survival_select')}
@@ -1067,22 +1091,19 @@ export const App = () => {
                       <span style={{ color: COLORS.textMuted }}>Survive:</span>
                       <span className="font-bold" style={{ color: COLORS.accent }}>
                         {formatTimeShort(level.survivalTime)}
-                      </span>
+        </span>
                     </div>
                     <div className="flex justify-between items-center mb-4 text-sm">
                       <span style={{ color: COLORS.textMuted }}>Lives remaining:</span>
                       <div className="flex gap-1">
                         {[1, 2, 3].map(i => (
-                          <span 
-                            key={i}
-                            style={{ color: i <= initData.storyProgress.triesRemaining ? COLORS.danger : COLORS.gridLine }}
-                          >
-                            ❤️
+                          <span key={i}>
+                            {i <= initData.storyProgress.triesRemaining ? '❤️' : '🖤'}
                           </span>
                         ))}
                       </div>
                     </div>
-                    <button
+        <button
                       onClick={() => startGame('story', level.id)}
                       disabled={initData.storyProgress.triesRemaining <= 0}
                       className="w-full py-3 rounded-lg font-bold transition-opacity"
@@ -1093,8 +1114,8 @@ export const App = () => {
                       }}
                     >
                       {initData.storyProgress.triesRemaining > 0 ? '▶ Play' : 'No lives left today'}
-                    </button>
-                  </div>
+        </button>
+      </div>
                 );
               })()}
             </>
@@ -1116,13 +1137,13 @@ export const App = () => {
       {/* ============ SURVIVAL SELECT ============ */}
       {screen === 'survival_select' && initData && (
         <div className="flex flex-col items-center p-4 w-full max-w-md max-h-screen overflow-auto">
-          <button
+        <button
             onClick={() => setScreen('menu')}
             className="self-start mb-4 text-sm"
             style={{ color: COLORS.textMuted }}
-          >
+        >
             ← Back
-          </button>
+        </button>
 
           <h2 className="text-2xl font-bold mb-4" style={{ color: COLORS.accent }}>
             ⏱️ Survival Mode
@@ -1138,7 +1159,7 @@ export const App = () => {
               const personalBest = initData.personalBests[level.id];
               
               return (
-                <button
+        <button
                   key={level.id}
                   onClick={() => isUnlocked && startGame('survival', level.id)}
                   disabled={!isUnlocked}
@@ -1170,7 +1191,7 @@ export const App = () => {
                       {level.gridSize < 20 && <span>📦</span>}
                     </div>
                   </div>
-                </button>
+        </button>
               );
             })}
           </div>
@@ -1295,16 +1316,30 @@ export const App = () => {
               </div>
             )}
 
+            {/* Lives remaining for Story Mode */}
+            {gameMode === 'story' && initData && (
+              <div className="flex items-center justify-center gap-2 mb-4">
+                <span style={{ color: COLORS.textMuted }}>Lives:</span>
+                <div className="flex gap-1">
+                  {[1, 2, 3].map(i => (
+                    <span key={i} className="text-lg">
+                      {i <= initData.storyProgress.triesRemaining ? '❤️' : '🖤'}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {/* Buttons */}
             <div className="flex flex-col gap-2">
               {gameMode === 'story' && gameResult === 'win' && currentLevelConfig.id < TOTAL_LEVELS && initData && initData.storyProgress.triesRemaining > 0 && (
-                <button
+        <button
                   onClick={() => startGame('story', currentLevelConfig.id + 1)}
                   className="w-full py-3 rounded-lg font-bold"
                   style={{ background: COLORS.success, color: COLORS.text }}
-                >
+        >
                   Continue to Level {currentLevelConfig.id + 1}
-                </button>
+        </button>
               )}
               
               {gameMode === 'story' && gameResult === 'lose' && initData && initData.storyProgress.triesRemaining > 0 && (
@@ -1315,6 +1350,16 @@ export const App = () => {
                 >
                   Retry ({initData.storyProgress.triesRemaining} {initData.storyProgress.triesRemaining === 1 ? 'life' : 'lives'} left)
                 </button>
+              )}
+
+              {/* No lives remaining message */}
+              {gameMode === 'story' && initData && initData.storyProgress.triesRemaining <= 0 && (
+                <div 
+                  className="w-full py-3 rounded-lg text-center"
+                  style={{ background: 'rgba(239, 68, 68, 0.2)', color: COLORS.danger }}
+                >
+                  No lives left today! Come back tomorrow.
+                </div>
               )}
 
               {gameMode === 'survival' && (

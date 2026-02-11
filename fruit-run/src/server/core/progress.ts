@@ -5,6 +5,7 @@ const TRIES_KEY = 'story:tries:';
 const LAST_RESET_KEY = 'story:lastReset:';
 const STORY_LEADERBOARD_KEY = 'leaderboard:story:progress';
 const STORY_DATA_KEY = 'leaderboard:story:data';
+const NOTIFY_PLAYERS_KEY = 'notify:lives_restocked';
 
 const MAX_TRIES_PER_DAY = 3;
 const TOTAL_LEVELS = 30;
@@ -68,7 +69,7 @@ export const canPlay = async (): Promise<{ canPlay: boolean; triesRemaining: num
   return { canPlay: tries > 0, triesRemaining: tries };
 };
 
-// Use a try when player FAILS a level (not when starting)
+// Use a try when player starts a game
 export const useTry = async (): Promise<{ triesRemaining: number; success: boolean }> => {
   const username = await reddit.getCurrentUsername();
   if (!username) throw new Error('User not authenticated');
@@ -92,7 +93,28 @@ export const useTry = async (): Promise<{ triesRemaining: number; success: boole
   const newTries = tries - 1;
   await redis.set(`${TRIES_KEY}${username}`, newTries.toString());
 
+  // If player used their last life, add them to notification list
+  if (newTries === 0) {
+    await redis.sAdd(NOTIFY_PLAYERS_KEY, username);
+  }
+
   return { triesRemaining: newTries, success: true };
+};
+
+// Get players who need to be notified about lives restocking
+export const getPlayersToNotify = async (): Promise<string[]> => {
+  const members = await redis.sMembers(NOTIFY_PLAYERS_KEY);
+  return members;
+};
+
+// Clear the notification list after sending notifications
+export const clearNotificationList = async (): Promise<void> => {
+  await redis.del(NOTIFY_PLAYERS_KEY);
+};
+
+// Remove a single player from the notification list
+export const removeFromNotificationList = async (username: string): Promise<void> => {
+  await redis.sRem(NOTIFY_PLAYERS_KEY, [username]);
 };
 
 // Complete a level (advance to next) - does NOT consume a try
