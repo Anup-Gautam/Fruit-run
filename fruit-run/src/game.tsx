@@ -1,5 +1,6 @@
 import './index.css';
 import logoUrl from './logo.png';
+import { playGameStart, playGameEnd, playPlayerEats, playSnakeEats } from './sfx';
 
 import type { PointerEvent as ReactPointerEvent } from 'react';
 import { StrictMode, useEffect, useRef, useState, useCallback } from 'react';
@@ -18,6 +19,8 @@ const COLLISION_TOLERANCE = 0.6;
 const POWER_FOOD_DURATION = 6000;
 const PLAYER_FOOD_UNLOCK_TIME = 30000; // 30 seconds before player can eat food
 const PROJECTILE_SIZE_RATIO = 0.3;
+/** Minimum pixels per cell (README grid sizes: 22×22, 18×18, etc.). We fill viewport up to this density. */
+const MIN_CELL_PIXELS = 18;
 
 // ============ TYPES ============
 type Point = { x: number; y: number };
@@ -328,17 +331,21 @@ export const App = () => {
       ctx.fillRect(0, (arenaOffset + currentArenaSize) * cellSize, canvasSize, arenaOffset * cellSize);
     }
 
+    // Batch grid lines (2 strokes instead of 2*(gridSize+1)) for better performance
+    ctx.beginPath();
     for (let i = 0; i <= gridSize; i++) {
       const pos = i * cellSize;
-      ctx.beginPath();
       ctx.moveTo(pos, 0);
       ctx.lineTo(pos, canvasSize);
-      ctx.stroke();
-      ctx.beginPath();
+    }
+    ctx.stroke();
+    ctx.beginPath();
+    for (let i = 0; i <= gridSize; i++) {
+      const pos = i * cellSize;
       ctx.moveTo(0, pos);
       ctx.lineTo(canvasSize, pos);
-      ctx.stroke();
     }
+    ctx.stroke();
 
     // Draw power food
     if (powerFood) {
@@ -532,8 +539,9 @@ export const App = () => {
     ctx.fill();
   }, []);
 
-  // Last UI update timestamp for throttling
+  // Last UI update timestamp for throttling (reduces React re-renders)
   const lastUIUpdateRef = useRef(0);
+  const lastHUDRef = useRef({ score: 0, length: 0, speed: 0 });
 
   // Game loop
   const gameLoop = useCallback((timestamp: number) => {
@@ -542,15 +550,30 @@ export const App = () => {
 
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const ctx = canvas.getContext('2d');
+    const ctx = canvas.getContext('2d', { alpha: false, willReadFrequently: false });
     if (!ctx) return;
 
     const config = game.levelConfig;
     const elapsedTime = timestamp - game.startTime;
 
-    // Throttle UI updates to reduce React re-renders (update every 100ms)
+    // Throttle all HUD updates to reduce React re-renders (max every 100ms)
+    const scoreDisplay = Math.floor(elapsedTime);
+    const lengthDisplay = game.snake.length;
+    const speedDisplay = game.snakeSpeed;
     if (timestamp - lastUIUpdateRef.current >= 100) {
-      setScore(Math.floor(elapsedTime));
+      const last = lastHUDRef.current;
+      if (last.score !== scoreDisplay) {
+        last.score = scoreDisplay;
+        setScore(scoreDisplay);
+      }
+      if (last.length !== lengthDisplay) {
+        last.length = lengthDisplay;
+        setSnakeLength(lengthDisplay);
+      }
+      if (last.speed !== speedDisplay) {
+        last.speed = speedDisplay;
+        setSnakeSpeed(speedDisplay);
+      }
       lastUIUpdateRef.current = timestamp;
     }
 
@@ -558,6 +581,7 @@ export const App = () => {
     if (game.gameMode === 'story' && elapsedTime >= config.survivalTime) {
       game.isPlaying = false;
       setGameResult('win');
+      playGameEnd(true);
       setScreen('game_over');
       // Auto-complete level
       trpc.story.completeLevel.mutate({ level: config.id }).then(() => {
@@ -579,7 +603,6 @@ export const App = () => {
     if (config.specialModifier === 'chaos' && timestamp - game.lastChaosTime >= 5000) {
       game.snakeSpeed = 80 + Math.floor(Math.random() * 120); // 80-200ms
       game.lastChaosTime = timestamp;
-      setSnakeSpeed(game.snakeSpeed);
     }
 
     // Shrinking arena modifier
@@ -593,20 +616,18 @@ export const App = () => {
     if (config.speedIncreaseInterval > 0 && timestamp - game.lastSpeedTime >= config.speedIncreaseInterval) {
       game.snakeSpeed = Math.max(MIN_SNAKE_SPEED, game.snakeSpeed - config.speedIncreaseAmount);
       game.lastSpeedTime = timestamp;
-      setSnakeSpeed(game.snakeSpeed);
     }
 
     // Snake growth (respects max length cap)
     if (config.growInterval > 0 && timestamp - game.lastGrowTime >= config.growInterval) {
       for (let i = 0; i < config.growAmount; i++) {
-        if (game.snake.length >= config.maxSnakeLength) break; // Hard cap
+        if (game.snake.length >= game.effectiveMaxSnakeLength) break;
         const tail = game.snake[game.snake.length - 1];
         if (tail) {
           game.snake.push({ x: tail.x, y: tail.y });
         }
       }
       game.lastGrowTime = timestamp;
-      setSnakeLength(game.snake.length);
     }
 
     // Power food spawning
@@ -696,18 +717,17 @@ export const App = () => {
         
         // Check if snake eats power food
         if (game.powerFood && checkSnakeFoodCollision(newHead, game.powerFood)) {
+          playSnakeEats();
           game.snakeSpeed = Math.max(MIN_SNAKE_SPEED, game.snakeSpeed - config.powerFoodSpeedBoost);
-          setSnakeSpeed(game.snakeSpeed);
           
-          // Grow snake (respects max length cap)
+          // Grow snake (respects effective max)
           for (let i = 0; i < config.powerFoodSizeBoost; i++) {
-            if (game.snake.length >= config.maxSnakeLength) break; // Hard cap
+            if (game.snake.length >= game.effectiveMaxSnakeLength) break;
             const tail = game.snake[game.snake.length - 1];
             if (tail) {
               game.snake.push({ x: tail.x, y: tail.y });
             }
           }
-          setSnakeLength(game.snake.length);
           
           game.powerFood = null;
           game.lastPowerFoodSpawnTime = timestamp;
@@ -720,6 +740,7 @@ export const App = () => {
     // Check if player eats power food (only after 30s)
     const canPlayerEatFood = elapsedTime >= PLAYER_FOOD_UNLOCK_TIME;
     if (canPlayerEatFood && game.powerFood && checkPlayerFoodCollision(game.fruit, game.powerFood, game.cellSize)) {
+      playPlayerEats();
       game.playerFoodCount++;
       setPlayerFoodCount(game.playerFoodCount);
       
@@ -734,7 +755,6 @@ export const App = () => {
         if (survivalBoostedFood && game.snake.length > 1) {
           game.snake.pop();
         }
-        setSnakeLength(game.snake.length);
       }
       
       // Decrease snake speed: every 4 foods normally, every 2 foods in survival boost mode
@@ -742,7 +762,6 @@ export const App = () => {
       const speedReductionAmount = survivalBoostedFood ? 5 : 2;
       if (game.playerFoodCount % speedReductionInterval === 0) {
         game.snakeSpeed = Math.min(300, game.snakeSpeed + speedReductionAmount);
-        setSnakeSpeed(game.snakeSpeed);
       }
       
       game.powerFood = null;
@@ -753,6 +772,7 @@ export const App = () => {
     const handleLoss = () => {
       game.isPlaying = false;
       setGameResult('lose');
+      playGameEnd(false);
       setScreen('game_over');
       
       if (game.gameMode === 'survival') {
@@ -798,20 +818,18 @@ export const App = () => {
     const config = getLevel(levelId);
     if (!config) return;
 
-    // For story mode, check if user can play and consume a life immediately
-    // Each game attempt costs 1 life (win or lose)
+    // For story mode, check + consume a life in one round-trip (faster load)
     if (mode === 'story') {
       setIsStartingGame(true);
       try {
-        const canPlayResult = await trpc.story.canPlay.query();
-        if (!canPlayResult.canPlay) {
+        const result = await trpc.story.startStoryGame.mutate();
+        if (!result.canPlay) {
           alert('No lives remaining today! Come back tomorrow.');
           setIsStartingGame(false);
           return;
         }
-        // Consume a life when starting the game
-        await trpc.story.useTry.mutate();
-        await refreshData(); // Await to ensure hearts update immediately
+        // Refresh hearts in background (don't block game start)
+        void refreshData();
       } catch (err) {
         console.error('Error starting game:', err);
         setIsStartingGame(false);
@@ -852,40 +870,33 @@ export const App = () => {
     setGameResult(null);
     setLastSubmitResult(null);
     setIsStartingGame(false);
+    lastUIUpdateRef.current = 0;
+    lastHUDRef.current = { score: 0, length: config.initialSnakeLength, speed: config.initialSnakeSpeed };
     setScreen('playing');
+    playGameStart();
 
-    // Use requestAnimationFrame to ensure DOM is ready
+    // Size canvas to fill viewport (grid stays gridSize×gridSize). Double rAF so layout is stable and grid doesn't shrink on first turn.
     requestAnimationFrame(() => {
-      const canvas = canvasRef.current;
-      if (canvas) {
-        // Get viewport dimensions
+      requestAnimationFrame(() => {
+        const canvas = canvasRef.current;
+        if (!canvas) return;
         const viewportWidth = window.innerWidth;
         const viewportHeight = window.innerHeight;
-        
-        // Calculate available space (accounting for HUD and padding)
-        const availableWidth = viewportWidth - 32; // 16px padding on each side
-        const availableHeight = viewportHeight - 120; // Space for HUD
-        
-        // Use the smaller dimension to ensure square canvas fits
-        const maxSize = Math.min(availableWidth, availableHeight);
-        
-        // Calculate cell size based on grid size (minimum 15px per cell for visibility)
-        const idealCellSize = Math.floor(maxSize / config.gridSize);
-        const cellSize = Math.max(15, idealCellSize);
+        const availableWidth = Math.max(200, viewportWidth - 24);
+        const availableHeight = Math.max(200, viewportHeight - 80);
+        const maxSide = Math.min(availableWidth, availableHeight);
+        const idealCellSize = Math.floor(maxSide / config.gridSize);
+        const cellSize = Math.max(MIN_CELL_PIXELS, idealCellSize);
         const canvasSize = cellSize * config.gridSize;
-        
-        // Set canvas dimensions
+
         canvas.width = canvasSize;
         canvas.height = canvasSize;
         canvas.style.width = `${canvasSize}px`;
         canvas.style.height = `${canvasSize}px`;
-
         game.cellSize = cellSize;
         game.canvasSize = canvasSize;
-        
-        // Start the game loop after canvas is sized
         requestAnimationFrame(gameLoop);
-      }
+      });
     });
   }, [initSnake, gameLoop, refreshData, isStartingGame]);
 
@@ -1239,8 +1250,8 @@ export const App = () => {
             className="cursor-none touch-none rounded-lg shadow-2xl"
             style={{ 
               border: `2px solid ${COLORS.gridLine}`,
-              maxWidth: 'calc(100vw - 32px)',
-              maxHeight: 'calc(100vh - 180px)',
+              maxWidth: 'calc(100vw - 24px)',
+              maxHeight: 'calc(100vh - 80px)',
             }}
             onPointerMove={handlePointerMove}
             onPointerDown={handlePointerMove}

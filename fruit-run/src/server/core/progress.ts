@@ -10,6 +10,9 @@ const NOTIFY_PLAYERS_KEY = 'notify:lives_restocked';
 const MAX_TRIES_PER_DAY = 3;
 const TOTAL_LEVELS = 30;
 
+// Set to true for testing: infinite lives (server always reports 3, never decrements)
+const INFINITE_LIVES_FOR_TESTING = true;
+
 // Get today's date string in UTC
 const getTodayString = (): string => {
   return new Date().toISOString().split('T')[0]!;
@@ -40,6 +43,10 @@ export const getStoryProgress = async (): Promise<{
 
   const levelStr = await redis.get(`${STORY_LEVEL_KEY}${username}`);
   const currentLevel = levelStr ? parseInt(levelStr, 10) : 1;
+
+  if (INFINITE_LIVES_FOR_TESTING) {
+    triesRemaining = MAX_TRIES_PER_DAY;
+  }
   
   return {
     currentLevel,
@@ -66,6 +73,9 @@ export const canPlay = async (): Promise<{ canPlay: boolean; triesRemaining: num
   const triesStr = await redis.get(`${TRIES_KEY}${username}`);
   const tries = triesStr ? parseInt(triesStr, 10) : MAX_TRIES_PER_DAY;
 
+  if (INFINITE_LIVES_FOR_TESTING) {
+    return { canPlay: true, triesRemaining: MAX_TRIES_PER_DAY };
+  }
   return { canPlay: tries > 0, triesRemaining: tries };
 };
 
@@ -81,6 +91,10 @@ export const useTry = async (): Promise<{ triesRemaining: number; success: boole
   if (lastReset !== today) {
     await redis.set(`${TRIES_KEY}${username}`, MAX_TRIES_PER_DAY.toString());
     await redis.set(`${LAST_RESET_KEY}${username}`, today);
+  }
+
+  if (INFINITE_LIVES_FOR_TESTING) {
+    return { triesRemaining: MAX_TRIES_PER_DAY, success: true };
   }
 
   const triesStr = await redis.get(`${TRIES_KEY}${username}`);
@@ -99,6 +113,17 @@ export const useTry = async (): Promise<{ triesRemaining: number; success: boole
   }
 
   return { triesRemaining: newTries, success: true };
+};
+
+// Single call to check + consume a life (reduces round-trips when starting a game)
+export const startStoryGame = async (): Promise<{
+  canPlay: boolean;
+  triesRemaining: number;
+}> => {
+  const can = await canPlay();
+  if (!can.canPlay) return { canPlay: false, triesRemaining: 0 };
+  const used = await useTry();
+  return { canPlay: used.success, triesRemaining: used.triesRemaining };
 };
 
 // Get players who need to be notified about lives restocking

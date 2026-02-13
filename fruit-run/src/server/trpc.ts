@@ -6,6 +6,7 @@ import {
   getStoryProgress, 
   canPlay,
   useTry, 
+  startStoryGame,
   completeLevel, 
   getStoryLeaderboard,
   getStoryRank 
@@ -67,6 +68,9 @@ export const appRouter = t.router({
     }),
     useTry: publicProcedure.mutation(async () => {
       return await useTry();
+    }),
+    startStoryGame: publicProcedure.mutation(async () => {
+      return await startStoryGame();
     }),
     completeLevel: publicProcedure
       .input(z.object({ level: z.number() }))
